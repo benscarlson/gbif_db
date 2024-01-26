@@ -17,7 +17,9 @@ mv data/0075895-231120084113126.csv data/acer.csv
 rm data/acer.zip
 
 wc -l 
+
 #---- Create the database ---
+
 cd data
 
 duckdb $db

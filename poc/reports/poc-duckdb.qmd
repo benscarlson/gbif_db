@@ -1,5 +1,5 @@
 ---
-title: "Report"
+title: "Gbif database"
 format: 
   html:
     self-contained: true
@@ -60,6 +60,7 @@ theme_set(theme_eda)
 
 #---- Local parameters ----
 .dbPF <- wd('data/gbif.db')
+.csvPF <- wd('data/acer.csv')
   
 #---- Files and folders ----
 
@@ -74,7 +75,9 @@ invisible(assert_that(length(dbListTables(db))>0))
 
 ```
 
-## How I created the database
+Creating and testing gbif data in a duckdb database
+
+## Get some gbif data
 
 Get the taxon key for Acer
 
@@ -129,12 +132,31 @@ occGet <- occ_download_get(status$key,wd('data'))
 
 ```
 
+
 Or use wget and the download url `r status$downloadLink`
+
+## Create the database
 
 See `src/poc/reports/wf-poc-duckdb.sh` for how I created the database from the
 gbif csv file.
 
+### File size comparison
+
+CSV file is `r format(round(file.size(.csvPF)/1e6),big.mark=',')` MB
+
+Database is `r round(file.size(.dbPF)/1e6)` MB
+
 ## Query the database
+
+For now, all data is in a single table called `occ`.
+
+```{r}
+totRows <- 'select count(*) as num from occ' %>% dbGetQuery(db,.) %>% 
+  tibble %>% pull('num')
+
+```
+
+There are `r format(totRows, big.mark=',')` occ records.
 
 To get a quick glance at the columns
 
