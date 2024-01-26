@@ -1,0 +1,291 @@
+---
+title: "GBIF API"
+format: 
+  html:
+    self-contained: true
+    fig-format: jpeg
+execute: 
+  echo: true
+  message: false
+  warning: false
+params:
+  pd: ~/projects/gbif_db
+  wd: NULL
+  seed: NULL
+  
+---
+
+```{r setup}
+#| include: false
+
+#Note interactive() is FALSE when clicking the render button
+if(interactive()) {
+  .pd <- '~/projects/gbif_db'
+  .wd <- file.path(.pd,'analysis/poc/gbif_api/s1')
+  .seed <- NULL
+
+} else {
+  .pd <- params$pd
+  .wd <- params$wd
+  .seed <- params$seed
+
+}
+
+pd <- function(...) file.path(.pd,...)
+wd <- function(...) file.path(.wd,...)
+
+#---- Initialize Environment ----#
+if(!is.null(.seed)) {message(paste('Random seed set to',.seed)); set.seed(as.numeric(.seed))}
+
+source(pd('src/startup.r'))
+
+#---- Libraries ----
+suppressWarnings(
+  suppressPackageStartupMessages({
+    library(knitr)
+    library(rgbif)
+    library(patchwork)
+  }))
+
+tic(msg='Report execution time')
+
+#Source all files in the auto load funs directory
+list.files(pd('src/funs/auto'),full.names=TRUE) %>% walk(source)
+source(pd('src/funs/themes.r'))
+
+theme_set(theme_eda)
+
+#---- Local functions ----
+
+#---- Local parameters ----
+
+#---- Files and folders ----
+
+#---- Initialize database ----#
+# invisible(assert_that(file.exists(.dbPF)))
+# db <- dbConnect(duckdb(), dbdir=.dbPF, read_only=TRUE)
+# invisible(assert_that(length(dbListTables(db))>0))
+
+#---- Load data ----
+#message('Loading data...')
+
+
+```
+
+* https://www.gbif.org/tool/81747/rgbif
+
+## Introduction to rgbif
+
+* https://docs.ropensci.org/rgbif/articles/rgbif.html
+
+
+### Oaks in CT
+
+Used the UI to generate this url
+
+https://www.gbif.org/occurrence/search?taxon_key=3189834&occurrence_status=present&gadm_gid=USA.7_1
+
+2,449 results
+
+Download: https://api.gbif.org/v1/occurrence/download/request/0073372-231120084113126.zip
+DOI: https://doi.org/10.15468/dl.z7q2bg
+DOI redirect: https://www.gbif.org/occurrence/download/0073372-231120084113126
+
+Downloaded and extracted to `data/ct_oaks.csv` using `zsh`
+
+The file is not actually a csv file, it is tab-delimited
+
+Load and split the `issues` column. Check out `occ_issues` it might do something similar.
+
+```{r}
+oaksWeb0 <- read_delim(wd('data/ct_oaks.csv'),delim='\t')
+
+#This method will not create columns for issues that are not present in the dataset
+# This could be good or bad, not sure
+
+issueDat0 <- oaksWeb0 %>% 
+  select(gbifID,issue) %>%
+  mutate(issueDf=map(issue,~{
+    issues=trimws(str_split_1(.x,';'))
+
+    tibble(name=issues) %>%
+      mutate(value=TRUE)
+  
+  })) %>%
+  select(-issue) %>%
+  unnest(cols=issueDf) 
+
+cat('The following issues are found on one or more records\n\n')
+
+issueDat0 %>% 
+  group_by(name) %>% 
+  summarize(num_occ=n()) %>% 
+  select(num_occ,name) %>%
+  arrange(desc(num_occ))
+
+issueDat <- issueDat0 %>%
+  pivot_wider(values_fill=FALSE)
+
+oaksWeb <- oaksWeb0 %>%
+  select(-issue) %>%
+  left_join(issueDat,by='gbifID')
+
+```
+
+Issues and Flags set by Pep
+
+Only the three matched flags are present in the oaks dataset
+
+| Zero coordinate ||
+| Coordinate out of range ||
+| Coordinate invalid ||
+| Coordinate rounded | COORDINATE_ROUNDED |
+| Geodetic datum invalid | GEODETIC_DATUM_INVALID |
+| Geodetic datum assumed ||
+| WGS84 Coordinate reprojection failed ||
+| Country coordinate mismatch ||
+| Modified date unlikely ||
+| Modified date invalid | MODIFIED_DATE_INVALID |
+| Identified date unlikely ||
+| Identified date invalid ||
+
+```{r}
+oaksWeb %>% filter(!COORDINATE_ROUNDED) %>% nrow
+oaksWeb %>% filter(!GEODETIC_DATUM_INVALID) %>% nrow
+oaksWeb %>% filter(!MODIFIED_DATE_INVALID) %>% nrow
+
+webCln <- oaksWeb %>% filter(!(COORDINATE_ROUNDED | GEODETIC_DATUM_INVALID | MODIFIED_DATE_INVALID))
+
+```
+
+After filtering for issues COORDINATE_ROUNDED, GEODETIC_DATUM_INVALID, MODIFIED_DATE_INVALID
+there are `r nrow(webCln)` records.
+
+## Issues
+
+http://cran.nexr.com/web/packages/rgbif/vignettes/issues_vignette.html
+
+Lookup table for gbif issues
+
+```{r}
+gbif_issues() %>% kable()
+
+```
+
+
+## occ_search
+
+Reproduce query with filter using `occ_search`. By default,`occurrenceStaus="PRESENT"`. Number of 
+records returned (`limit`) is 500 by default. But it will also tell you the total
+number of records found.
+
+```{r}
+
+occ <- occ_search(taxonKey=3189834,gadmGid='USA.7_1')
+
+names(occ)
+
+```
+
+Number of occ found: `r occ$meta$count`
+Number of occ returned: `r nrow(occ$data)`
+
+Update `limit` to get all the records.
+
+```{r}
+
+occ <- occ_search(taxonKey=3189834,gadmGid='USA.7_1',limit=3000)
+
+```
+
+Number of occ found: `r occ$meta$count`
+Number of occ returned: `r nrow(occ$data)`
+
+Seems you can't ask occ_search to perform an issues filter. The function `occ_issues()`
+was supposed to help with filtering locally but that was deprecated as of version 3.7.9.
+
+Use `name_backbone()` to look up the taxon. `usageKey` is the taxon key for at
+the level of the search term. Since `Acer` is a genus, `usageKey` matches the 
+column `genusKey`
+
+```{r}
+nb <- name_backbone('Acer')
+
+kable(nb)
+
+```
+
+`usageKey`: `r nb$usageKey`
+`genusKey`: `r nb$genusKey`
+
+# occ_download()
+
+Valid keys for pred* functions are at the end of the documentation for the 
+predicate dsl. https://docs.ropensci.org/rgbif/reference/download_predicate_dsl.html
+
+Try to reproduce the above two queries.
+
+Just like the other two interfaces, it does not appear possible to filter by 
+the contents of the `issue` column.
+
+Load in the authentication information.
+
+```{r}
+
+library(yaml)
+cred <- read_yaml(wd('auth.yml'))
+  
+```
+
+Make the request
+
+```{r}
+
+if(FALSE) {
+occ_download(
+  type='and',
+    pred('taxonKey',3189834),
+    pred('occurrenceStatus','PRESENT'),
+    pred('gadm','USA.7_1'), #gadmGid
+  format='SIMPLE_CSV',
+  user=cred$user,
+  pwd=cred$pass,
+  email=cred$email)
+}
+
+occ_download_list(
+  user=cred$user,
+  pwd=cred$pass) %>% kable
+ 
+```
+
+`occ_download()` functions look for environment variables for credentials.
+
+```{r}
+Sys.setenv(GBIF_USER=cred$user)
+Sys.setenv(GBIF_PWD=cred$pass)
+Sys.setenv(GBIF_EMAIL=cred$email)
+
+occ_download_list() %>% kable
+```
+
+Examine `occ_download_prep()`
+
+```{r}
+
+req <- occ_download_prep(
+  type='and',
+    pred('taxonKey',3189834),
+    pred('occurrenceStatus','PRESENT'),
+    pred('gadm','USA.7_1'), #gadmGid
+  format='SIMPLE_CSV')
+
+req$url
+
+req$json_request
+
+```
+
+
+
+`r capture.output(toc())`

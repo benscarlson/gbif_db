@@ -1,0 +1,176 @@
+---
+title: "Report"
+format: 
+  html:
+    self-contained: true
+    fig-format: jpeg
+execute: 
+  echo: true
+  message: false
+  warning: false
+params:
+  pd: ~/projects/gbif_db
+  wd: NULL
+  sesnm: NULL
+  seed: NULL
+  
+---
+
+```{r setup}
+#| include: false
+
+#Note interactive() is FALSE when clicking the render button
+if(interactive()) {
+  .pd <- '~/projects/gbif_db'
+  .wd <- file.path(.pd,'analysis/poc/duckdb/s1')
+  .seed <- NULL
+
+} else {
+  .pd <- params$pd
+  .wd <- params$wd
+  .seed <- params$seed
+}
+
+pd <- function(...) file.path(.pd,...)
+wd <- function(...) file.path(.wd,...)
+
+#---- Initialize Environment ----#
+if(!is.null(.seed)) {message(paste('Random seed set to',.seed)); set.seed(as.numeric(.seed))}
+
+source(pd('src/startup.r'))
+
+#---- Libraries ----
+suppressWarnings(
+  suppressPackageStartupMessages({
+    library(knitr)
+    library(duckdb)
+    library(rgbif)
+    library(yaml)
+  }))
+
+tic(msg='Report execution time')
+
+#Source all files in the auto load funs directory
+list.files(pd('src/funs/auto'),full.names=TRUE) %>% walk(source)
+source(pd('src/funs/themes.r'))
+
+theme_set(theme_eda)
+
+#---- Local functions ----
+
+#---- Local parameters ----
+.dbPF <- wd('data/gbif.db')
+  
+#---- Files and folders ----
+
+#---- Initialize database ----#
+invisible(assert_that(file.exists(.dbPF)))
+db <- dbConnect(duckdb(), dbdir=.dbPF, read_only=TRUE)
+invisible(assert_that(length(dbListTables(db))>0))
+
+#---- Load data ----
+#message('Loading data...')
+
+
+```
+
+## How I created the database
+
+Get the taxon key for Acer
+
+```{r}
+nb <- name_backbone('Acer')
+```
+
+Load credentials and set env variables
+
+```{r}
+cred <- read_yaml(pd('analysis/poc/auth.yml'))
+
+Sys.setenv(GBIF_USER=cred$user)
+Sys.setenv(GBIF_PWD=cred$pass)
+Sys.setenv(GBIF_EMAIL=cred$email)
+
+```
+
+Make the request
+
+```{r}
+#| eval: false
+
+req <- occ_download(
+  type='and',
+    pred('taxonKey',nb$usageKey),
+    pred('occurrenceStatus','PRESENT'),
+  format='SIMPLE_CSV')
+
+dir.create(wd('data'),showWarnings=FALSE)
+saveRDS(req,wd('data/req.rds'))
+
+req1 <- req
+```
+
+Check status
+
+```{r}
+req <- readRDS(wd('data/req.rds'))
+status <- occ_download_wait(as.character(req))
+
+print(status)
+
+```
+
+Can download using occ_download_get
+
+```{r}
+#| eval: false
+
+occGet <- occ_download_get(status$key,wd('data'))
+
+```
+
+Or use wget and the download url `r status$downloadLink`
+
+See `src/poc/reports/wf-poc-duckdb.sh` for how I created the database from the
+gbif csv file.
+
+## Query the database
+
+To get a quick glance at the columns
+
+```{r}
+
+glance <- 'select * from occ limit 5' %>% dbGetQuery(db,.) %>% tibble
+
+glance %>% kable
+
+glance %>% 
+  slice(1) %>%
+  mutate(across(everything(),as.character)) %>%
+  pivot_longer(cols=everything(),names_to="column",values_to="example") %>%
+  kable
+
+cat('\n\n')
+```
+
+Query over all the data. Count all records per species where uncertainty < 1km.
+Just display the first 15 rows
+
+```{r}
+'select species, count(*) as num_occ
+from occ
+where coordinateUncertaintyInMeters <= 1000
+group by species' %>%
+dbGetQuery(db,.) %>% tibble %>%
+arrange(desc(num_occ)) %>% slice(1:15) %>%kable
+
+```
+
+
+
+`r capture.output(toc())`
+
+```{r finalize}
+dbDisconnect(db)
+
+```
